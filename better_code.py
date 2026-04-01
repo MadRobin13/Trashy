@@ -3,20 +3,24 @@ import pigpio
 import time
 import requests
 import json
+import base64
+from openai import OpenAI
 
 # ==========================================
 # CONSTANTS & CONFIGURATION
 # ==========================================
 
 # API Configuration
+OPENAI_API_KEY = "your-openai-api-key-here"  # Replace with your actual key
 REPORT_API_URL = "https://your-api-endpoint.com/report"
-AI_API_URL = "https://your-ai-endpoint.com/classify"
+
+# Initialize OpenAI Client
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Hardware Pins (BCM numbering)
 YELLOW_WAIT_LED = 14
 
 # Define pins for each category
-# Note: Adjust servo pulse widths based on your specific servos
 CATEGORIES = {
     "garbage":   {"red_led": 2,  "green_led": 3,  "servo": 4,  "button": 15},
     "recycling": {"red_led": 17, "green_led": 27, "servo": 22, "button": 18},
@@ -56,7 +60,7 @@ for cat, pins in CATEGORIES.items():
     pi.set_mode(pins["servo"], pigpio.OUTPUT)
     pi.set_servo_pulsewidth(pins["servo"], SERVO_CLOSED)
     
-    # Buttons (assuming buttons connect to Ground, using pull-up resistors)
+    # Buttons (using pull-up resistors)
     pi.set_mode(pins["button"], pigpio.INPUT)
     pi.set_pull_up_down(pins["button"], pigpio.PUD_UP)
 
@@ -75,29 +79,59 @@ def get_pressed_button():
             return cat
     return None
 
-def classify_image_with_ai(frame):
-    """Sends frame to AI API and returns 'garbage', 'recycling', or 'compost'"""
-    # Convert frame to jpg for API submission
-    _, img_encoded = cv2.imencode('.jpg', frame)
-    
-    print("Sending image to AI...")
-    try:
-        # Placeholder for actual API call
-        # response = requests.post(AI_API_URL, files={"image": img_encoded.tobytes()})
-        # return response.json().get("classification")
-        
-        time.sleep(1) # Simulating API latency
-        return "recycling" # HARDCODED FOR DEMONSTRATION. Replace with API logic.
-    except Exception as e:
-        print(f"AI API Error: {e}")
-        return "garbage" # Fallback
-
 def flash_red(category):
     """Flashes the red LED for a specific category"""
     pin = CATEGORIES[category]["red_led"]
     pi.write(pin, 1)
     time.sleep(0.5)
     pi.write(pin, 0)
+
+def classify_image_with_ai(frame):
+    """Encodes the frame and sends it to OpenAI's Vision API."""
+    print("Encoding image and sending to OpenAI...")
+    
+    # Convert OpenCV frame to JPEG, then to base64 string
+    _, buffer = cv2.imencode('.jpg', frame)
+    base64_image = base64.b64encode(buffer).decode('utf-8')
+    
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",  # gpt-4o is fast, accurate, and has vision capabilities
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an automated waste-sorting assistant. Look at the item in the image and classify it into exactly one of these three categories: 'garbage', 'recycling', or 'compost'. Reply ONLY with the category word in lowercase. Do not include punctuation."
+                },
+                {
+                    "role": "user",
+                    "content":[
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
+                                "detail": "low" # 'low' uses fewer tokens and is faster, usually sufficient for object classification
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=10,
+            temperature=0.0 # Keep temperature low for highly deterministic output
+        )
+        
+        # Extract and clean up the result
+        result = response.choices[0].message.content.strip().lower()
+        
+        # Safety fallback in case the AI hallucinates outside of our 3 categories
+        if result not in CATEGORIES:
+            print(f"Unexpected AI response '{result}'. Defaulting to 'garbage'.")
+            return "garbage"
+            
+        return result
+        
+    except Exception as e:
+        print(f"OpenAI API Error: {e}")
+        return "garbage" # Fallback if API fails or network goes down
 
 # ==========================================
 # MAIN LOOP
@@ -149,12 +183,11 @@ try:
         pi.write(YELLOW_WAIT_LED, 0) 
         
         # STEP 3: Wait for button presses / Guessing Game
-        guesses = []
+        guesses =[]
         
-        # If the user triggered the machine by pressing a button, that's their first guess
+        # If the user triggered the machine by pressing a button, that counts as their first guess
         if initial_guess:
             current_guess = initial_guess
-            # Wait for them to release the button
             while get_pressed_button() == current_guess:
                 time.sleep(0.05)
         else:
@@ -170,13 +203,13 @@ try:
                     
                 if current_guess == actual_category:
                     print("User guessed correctly!")
-                    pi.write(CATEGORIES[current_guess]["green_led"], 1) # Turn on green LED
+                    pi.write(CATEGORIES[current_guess]["green_led"], 1)
                     break
                 else:
                     print(f"Incorrect guess: {current_guess}. Flashing red.")
                     flash_red(current_guess)
                     
-                # Wait for user to release the button before reading again
+                # Debounce: Wait for user to release the button
                 while get_pressed_button() == current_guess:
                     time.sleep(0.05)
                 current_guess = None
@@ -188,25 +221,25 @@ try:
         servo_pin = CATEGORIES[actual_category]["servo"]
         pi.set_servo_pulsewidth(servo_pin, SERVO_OPEN)
         
-        # STEP 6: Send guess results to API
+        # STEP 5: Send guess results to API
         payload = {
             "category": actual_category,
             "guesses": guesses
         }
-        print(f"Sending data to API: {payload}")
+        print(f"Sending data to Reporting API: {payload}")
         try:
             requests.post(REPORT_API_URL, json=payload, timeout=5)
         except Exception as e:
             print(f"Reporting API Error: {e}")
 
-        # STEP 7: Wait for some time, then close flap
-        time.sleep(4) # Keep flap open for 4 seconds
+        # STEP 6: Wait for some time, then close flap
+        time.sleep(4) 
         print(f"Closing {actual_category} flap...")
         pi.set_servo_pulsewidth(servo_pin, SERVO_CLOSED)
-        pi.write(CATEGORIES[actual_category]["green_led"], 0) # Turn off green LED
-        time.sleep(1) # Let servo finish moving
+        pi.write(CATEGORIES[actual_category]["green_led"], 0) 
+        time.sleep(1) 
 
-        # STEP 8: Repeat (Loop continues)
+        # STEP 7: Repeat 
 
 except KeyboardInterrupt:
     print("\nShutting down gracefully...")
@@ -217,5 +250,5 @@ finally:
     for cat, pins in CATEGORIES.items():
         pi.write(pins["red_led"], 0)
         pi.write(pins["green_led"], 0)
-        pi.set_servo_pulsewidth(pins["servo"], 0) # Stop PWM
+        pi.set_servo_pulsewidth(pins["servo"], 0)
     pi.stop()
