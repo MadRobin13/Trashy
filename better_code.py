@@ -23,8 +23,8 @@ YELLOW_WAIT_LED = 14
 # Define pins for each category
 # Added blue_led pins (using 5, 6, 13 as examples)
 CATEGORIES = {
-    "garbage":   {"red_led": 2,  "green_led": 3,  "blue_led": 5,  "servo": 4,  "button": 15},
-    "recycling": {"red_led": 17, "green_led": 27, "blue_led": 6,  "servo": 22, "button": 18},
+    "garbage":   {"red_led": 3,  "green_led": 4,  "blue_led": 17,  "servo": 4,  "button": 15},
+    "recycling": {"red_led": 17, "green_led": 27, "blue_led": 22,  "servo": 22, "button": 18},
     "compost":   {"red_led": 10, "green_led": 9,  "blue_led": 13, "servo": 11, "button": 23}
 }
 
