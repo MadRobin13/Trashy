@@ -3,9 +3,9 @@ import time
 
 # Define pins for each category
 CATEGORIES = {
-    "garbage":   {"red_led": 3,  "green_led": 4,  "blue_led": 17,  "servo": 4,  "button": 15},
-    "recycling": {"red_led": 22, "green_led": 10, "blue_led": 9,  "servo": 22, "button": 18},
-    "compost":   {"red_led": 5, "green_led": 6,  "blue_led": 13, "servo": 11, "button": 23}
+    "garbage":   {"red_led": 3,  "green_led": 4,  "blue_led": 17,  "servo": 4,  "button": 19},
+    "recycling": {"red_led": 22, "green_led": 10, "blue_led": 9,  "servo": 22, "button": 11},
+    "compost":   {"red_led": 5, "green_led": 6,  "blue_led": 13, "servo": 11, "button": 15}
 }
 
 # Initialize RGBLED objects for each category
