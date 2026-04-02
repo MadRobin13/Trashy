@@ -3,7 +3,7 @@ import time
 
 # Define pins for each category
 CATEGORIES = {
-    "garbage":   {"red_led": 3,  "green_led": 4,  "blue_led": 17,  "servo": 17,  "button": 19},
+    "garbage":   {"red_led": 3,  "green_led": 4,  "blue_led": 17,  "servo": 27,  "button": 19},
     "recycling": {"red_led": 22, "green_led": 10, "blue_led": 9,  "servo": 18, "button": 11},
     "compost":   {"red_led": 5, "green_led": 6,  "blue_led": 13, "servo": 23, "button": 15}
 }
