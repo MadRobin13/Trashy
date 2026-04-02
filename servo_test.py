@@ -20,7 +20,7 @@ def test_servo(category):
         print(f"Testing {category} servo...")
         servos[category].min()  # Move to minimum position
         time.sleep(1)
-        servos[category].mid()  # Move to middle position
+        servos[category].max()  # Move to middle position
         time.sleep(1)
         servos[category].min()  # Move back to minimum position
         servos[category].detach()  # Detach after testing
