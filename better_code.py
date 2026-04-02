@@ -21,10 +21,11 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 YELLOW_WAIT_LED = 14
 
 # Define pins for each category
+# Added blue_led pins (using 5, 6, 13 as examples)
 CATEGORIES = {
-    "garbage":   {"red_led": 2,  "green_led": 3,  "servo": 4,  "button": 15},
-    "recycling": {"red_led": 17, "green_led": 27, "servo": 22, "button": 18},
-    "compost":   {"red_led": 10, "green_led": 9,  "servo": 11, "button": 23}
+    "garbage":   {"red_led": 2,  "green_led": 3,  "blue_led": 5,  "servo": 4,  "button": 15},
+    "recycling": {"red_led": 17, "green_led": 27, "blue_led": 6,  "servo": 22, "button": 18},
+    "compost":   {"red_led": 10, "green_led": 9,  "blue_led": 13, "servo": 11, "button": 23}
 }
 
 # Servo states (Pulse widths: 500-2500. 1500 is usually center)
@@ -33,6 +34,9 @@ SERVO_OPEN = 2000
 
 # Motion detection threshold
 MOTION_THRESHOLD = 10000 
+
+# Region of interest (x, y, width, height) to focus on key area only
+ROI = (80, 38, 888, 901)
 
 # ==========================================
 # INITIALIZATION
@@ -55,6 +59,8 @@ for cat, pins in CATEGORIES.items():
     pi.write(pins["red_led"], 0)
     pi.set_mode(pins["green_led"], pigpio.OUTPUT)
     pi.write(pins["green_led"], 0)
+    pi.set_mode(pins["blue_led"], pigpio.OUTPUT)
+    pi.write(pins["blue_led"], 0)
     
     # Servos
     pi.set_mode(pins["servo"], pigpio.OUTPUT)
@@ -86,17 +92,26 @@ def flash_red(category):
     time.sleep(0.5)
     pi.write(pin, 0)
 
+def settle_camera(wait_time=2.0):
+    """Read frames for a short period to clear the camera buffer after motion."""
+    start = time.time()
+    while time.time() - start < wait_time:
+        ret, _ = cap.read()
+        if not ret:
+            continue
+        time.sleep(0.01)
+
 def classify_image_with_ai(frame):
     """Encodes the frame and sends it to OpenAI's Vision API."""
     print("Encoding image and sending to OpenAI...")
-    
+
     # Convert OpenCV frame to JPEG, then to base64 string
     _, buffer = cv2.imencode('.jpg', frame)
     base64_image = base64.b64encode(buffer).decode('utf-8')
     
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",  # gpt-4o is fast, accurate, and has vision capabilities
+            model="gpt-4o",  
             messages=[
                 {
                     "role": "system",
@@ -109,22 +124,37 @@ def classify_image_with_ai(frame):
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:image/jpeg;base64,{base64_image}",
-                                "detail": "low" # 'low' uses fewer tokens and is faster, usually sufficient for object classification
+                                "detail": "low" 
                             }
                         }
                     ]
                 }
             ],
-            max_tokens=10,
-            temperature=0.0 # Keep temperature low for highly deterministic output
+            response_format={"type": "json_schema", "json_schema": {
+                "type": "object",
+                "properties": {
+                    "object_description": {
+                        "type": "string",
+                        "description": "A brief description of the item, including information that affects its classification (e.g., 'plastic bottle with label' or 'banana peel')."
+                    }, # <-- Added missing comma here
+                    "category": {
+                        "type": "string",
+                        "enum": ["garbage", "recycling", "compost"]
+                    }
+                },
+                "required": ["category", "object_description"],
+                "additionalProperties": False
+            }},
+            max_tokens=50,
+            temperature=0.0 
         )
         
-        # Extract and clean up the result
-        result = response.choices[0].message.content.strip().lower()
-        
-        # Safety fallback in case the AI hallucinates outside of our 3 categories
+        # Parse the JSON string returned by the API
+        response_json = json.loads(response.choices[0].message.content)
+        result = response_json.get("category", "unknown").lower()
+
         if result not in CATEGORIES:
-            print(f"Unexpected AI response '{result}'. Defaulting to 'garbage'.")
+            print(f"Unexpected category from AI: {result}. Defaulting to 'garbage'.")
             return "garbage"
             
         return result
@@ -146,6 +176,12 @@ try:
         pi.write(YELLOW_WAIT_LED, 1) # Turn on Wait LED
         
         ret, prev_frame = cap.read()
+        if not ret:
+            print("Failed to grab initial frame, retrying...")
+            time.sleep(0.2)
+            continue
+
+        prev_frame = prev_frame[ROI[1]:ROI[1]+ROI[3], ROI[0]:ROI[0]+ROI[2]]
         prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
         prev_gray = cv2.GaussianBlur(prev_gray, (21, 21), 0)
         
@@ -154,6 +190,10 @@ try:
         
         while True:
             ret, current_frame = cap.read()
+            if not ret:
+                continue
+
+            current_frame = current_frame[ROI[1]:ROI[1]+ROI[3], ROI[0]:ROI[0]+ROI[2]]
             gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
             gray = cv2.GaussianBlur(gray, (21, 21), 0)
             
@@ -170,20 +210,35 @@ try:
             
             if motion_score > MOTION_THRESHOLD:
                 print("Triggered by motion detected!")
-                time.sleep(0.5) # Wait half a second for object to settle
-                ret, current_frame = cap.read() # Grab a fresh, settled frame
+                print("Settling and clearing buffer...")
+                settle_camera(wait_time=2.0)
+                ret, current_frame = cap.read()
+                if ret:
+                    current_frame = current_frame[ROI[1]:ROI[1]+ROI[3], ROI[0]:ROI[0]+ROI[2]]
+                else:
+                    print("Failed to grab settled frame — retrying motion loop")
+                    prev_gray = gray
+                    continue
                 break
                 
             prev_gray = gray
             time.sleep(0.1)
 
         # STEP 2: Send to AI and turn off Yellow LED
+        if current_frame is None:
+            print("No frame available for classification; restarting cycle.")
+            pi.write(YELLOW_WAIT_LED, 0)
+            continue
+
         actual_category = classify_image_with_ai(current_frame)
         print(f"AI classified item as: {actual_category}")
         pi.write(YELLOW_WAIT_LED, 0) 
         
         # STEP 3: Wait for button presses / Guessing Game
-        guesses =[]
+        guesses = []
+        available_options = list(CATEGORIES.keys()) # Tracks which ones flash blue
+        blue_led_state = 0
+        last_flash_time = time.time()
         
         # If the user triggered the machine by pressing a button, that counts as their first guess
         if initial_guess:
@@ -194,10 +249,23 @@ try:
             current_guess = None
 
         while True:
+            # --- Non-blocking Blue LED Flasher ---
+            if current_guess is None: 
+                if time.time() - last_flash_time > 0.5: # 500ms toggle
+                    blue_led_state = 1 if blue_led_state == 0 else 0
+                    for cat in available_options:
+                        pi.write(CATEGORIES[cat]["blue_led"], blue_led_state)
+                    last_flash_time = time.time()
+
+            # Check for physical press
             if current_guess is None:
                 current_guess = get_pressed_button()
                 
             if current_guess:
+                # Turn off all blue LEDs immediately to show a button was registered
+                for cat in CATEGORIES:
+                    pi.write(CATEGORIES[cat]["blue_led"], 0)
+
                 if current_guess not in guesses:
                     guesses.append(current_guess)
                     
@@ -208,13 +276,24 @@ try:
                 else:
                     print(f"Incorrect guess: {current_guess}. Flashing red.")
                     flash_red(current_guess)
+                    # Remove from available options so it stops flashing blue
+                    if current_guess in available_options:
+                        available_options.remove(current_guess)
                     
                 # Debounce: Wait for user to release the button
                 while get_pressed_button() == current_guess:
                     time.sleep(0.05)
+                
+                # Reset states for the next loop
                 current_guess = None
+                blue_led_state = 0
+                last_flash_time = time.time() 
                 
             time.sleep(0.05)
+
+        # Make sure blue LEDs are absolutely off after correct guess
+        for cat in CATEGORIES:
+            pi.write(CATEGORIES[cat]["blue_led"], 0)
 
         # STEP 4: Open the correct flap
         print(f"Opening {actual_category} flap...")
@@ -250,5 +329,6 @@ finally:
     for cat, pins in CATEGORIES.items():
         pi.write(pins["red_led"], 0)
         pi.write(pins["green_led"], 0)
+        pi.write(pins["blue_led"], 0)
         pi.set_servo_pulsewidth(pins["servo"], 0)
     pi.stop()
