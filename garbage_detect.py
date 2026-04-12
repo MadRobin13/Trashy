@@ -2,16 +2,17 @@
 # pip install google-genai
 
 import os
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+load_dotenv()  # Load environment variables from .env file
+client = genai.Client(
+    api_key=os.getenv("GOOGLE_AI_API_KEY")
+)
 
-def generate():
-    client = genai.Client(
-        api_key="AIzaSyCvj9ra6L-YiWQ0hK6CzOiWA4pR1_jKA1U",
-    )
+def classify(image_bytes, mime, model = "gemini-3.1-flash-lite-preview"):
 
-    model = "gemini-3.1-flash-lite-preview"
     contents = [
         types.Content(
             role="system",
@@ -22,7 +23,10 @@ def generate():
         types.Content(
             role="user",
             parts=[
-                types.Part.from_uri(file_uri="https://t4.ftcdn.net/jpg/04/98/36/27/360_F_498362712_7sJRmv7sOsfCtqieE0wtIjUpdUBvF4PY.jpg"),
+                types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type=mime
+                ),
             ],
         )
     ]
@@ -51,13 +55,17 @@ def generate():
         ),
     )
 
-    for chunk in client.models.generate_content_stream(
+    return client.models.generate_content(
         model=model,
         contents=contents,
         config=generate_content_config,
-    ):
-        if text := chunk.text:
-            print(text, end="")
-
+    ).parsed
 if __name__ == "__main__":
-    generate()
+    url = "https://t4.ftcdn.net/jpg/04/98/36/27/360_F_498362712_7sJRmv7sOsfCtqieE0wtIjUpdUBvF4PY.jpg"
+    import requests
+    import tts
+    response = requests.get(url)
+    mime = response.headers['Content-Type']
+    classification = classify(response.content, mime)
+
+    tts.tts(classification["Explanation"])
